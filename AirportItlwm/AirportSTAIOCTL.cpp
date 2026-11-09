@@ -7,6 +7,7 @@
 //
 
 #include "AirportItlwm.hpp"
+#include "AirportItlwmMFP.hpp"
 #include <sys/_netstat.h>
 
 extern IOCommandGate *_fCommandGate;
@@ -275,7 +276,14 @@ setCIPHER_KEY(OSObject *object, struct apple80211_key *key)
         IOFree((void*)rscdump, 3 * key->key_rsc_len + 1);
     if (eadump)
         IOFree((void*)eadump, 3 * APPLE80211_ADDR_LEN + 1);
-    
+
+    if (itlwm_mfp_is_igtk(key)) {
+        itlwm_mfp_set_igtk(fHalService->get80211Controller(), key->key,
+                           key->key_len, key->key_index, key->key_rsc,
+                           key->key_rsc_len);
+        return kIOReturnSuccess;
+    }
+
     switch (key->key_cipher_type) {
         case APPLE80211_CIPHER_NONE:
             // clear existing key
@@ -703,11 +711,12 @@ getCARD_CAPABILITIES(OSObject *object,
     cd->capabilities[5] = 0x80;//isCntryDefaultSupported
     cd->capabilities[5] |= 0x0C;
     cd->capabilities[6] = (
-//                           1 |    //MFP capable
                            0x8 |
                            0x4 |
                            0x80
                            );
+    if (caps & IEEE80211_C_MFP)
+        cd->capabilities[6] |= 1;    //MFP capable
     cd->capabilities[7] = 0x84; // This byte contains Apple Watch unlock
     //cd->capabilities[8] = 0x40;
     //cd->capabilities[8] |= 8;//dfs white list

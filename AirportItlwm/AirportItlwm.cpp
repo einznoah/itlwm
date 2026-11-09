@@ -12,6 +12,7 @@
 * GNU General Public License for more details.
 */
 #include "AirportItlwm.hpp"
+#include "AirportItlwmMFP.hpp"
 
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_priv.h>
@@ -236,6 +237,7 @@ void AirportItlwm::setPTK(const u_int8_t *key, size_t key_len) {
         
         /* map PTK to 802.11 key */
         k = &ni->ni_pairwise_key;
+        itlwm_mfp_release_swkey(ic, ni, k);
         memset(k, 0, sizeof(*k));
         k->k_cipher = ni->ni_rsncipher;
         k->k_rsc[0] = prsc;
@@ -251,6 +253,7 @@ void AirportItlwm::setPTK(const u_int8_t *key, size_t key_len) {
         ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
         ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
         ni->ni_flags |= IEEE80211_NODE_RXPROT;
+        itlwm_mfp_ptk_installed(ic, ni);
     } else if (ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP)
         XYLog("%s: unexpected pairwise key update received from %s\n",
               ic->ic_if.if_xname, ether_sprintf(ni->ni_macaddr));
@@ -393,6 +396,8 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOVHT;
     if (PE_parse_boot_argn("-noht40", &boot_value, sizeof(boot_value)))
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOHT40;
+    if (PE_parse_boot_argn("-itlwmnomfp", &boot_value, sizeof(boot_value)))
+        fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOMFP;
     
     if (!fHalService->attach(pciNub)) {
         XYLog("attach fail\n");

@@ -7,6 +7,7 @@
 //
 #include "AirportItlwmV2.hpp"
 #include "AirportItlwmSkywalkInterface.hpp"
+#include "AirportItlwmMFP.hpp"
 #include <sys/CTimeout.hpp>
 #include <libkern/c++/OSMetaClass.h>
 #include <crypto/sha1.h>
@@ -191,6 +192,7 @@ void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
         
         /* map PTK to 802.11 key */
         k = &ni->ni_pairwise_key;
+        itlwm_mfp_release_swkey(ic, ni, k);
         memset(k, 0, sizeof(*k));
         k->k_cipher = ni->ni_rsncipher;
         k->k_rsc[0] = prsc;
@@ -206,6 +208,7 @@ void AirportItlwmSkywalkInterface::setPTK(const u_int8_t *key, size_t key_len) {
         ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
         ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
         ni->ni_flags |= IEEE80211_NODE_RXPROT;
+        itlwm_mfp_ptk_installed(ic, ni);
     } else if (ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP)
         XYLog("%s: unexpected pairwise key update received from %s\n",
               ic->ic_if.if_xname, ether_sprintf(ni->ni_macaddr));
@@ -343,7 +346,14 @@ setCIPHER_KEY(struct apple80211_key *key)
         IOFree((void*)rscdump, 3 * key->key_rsc_len + 1);
     if (eadump)
         IOFree((void*)eadump, 3 * APPLE80211_ADDR_LEN + 1);
-    
+
+    if (itlwm_mfp_is_igtk(key)) {
+        itlwm_mfp_set_igtk(fHalService->get80211Controller(), key->key,
+                           key->key_len, key->key_index, key->key_rsc,
+                           key->key_rsc_len);
+        return kIOReturnSuccess;
+    }
+
     switch (key->key_cipher_type) {
         case APPLE80211_CIPHER_NONE:
             // clear existing key
@@ -369,15 +379,22 @@ setCIPHER_KEY(struct apple80211_key *key)
             XYLog("Setting WPA PMK is not supported\n");
             break;
         case APPLE80211_CIPHER_MSK:
-            XYLog("Setting MSK\n");
-            ieee80211_pmksa_add(fHalService->get80211Controller(), IEEE80211_AKM_8021X,
-                                fHalService->get80211Controller()->ic_bss->ni_macaddr, key->key, 0);
+        case APPLE80211_CIPHER_PMKSA: {
+            struct ieee80211com *ic = fHalService->get80211Controller();
+
+            XYLog("Setting %s\n", key->key_cipher_type == APPLE80211_CIPHER_MSK ? "MSK" : "WPA PMKSA");
+            /*
+             * The PMK is the same for both 802.1X AKMs, but net80211 looks it
+             * up by the negotiated AKM, and prefers the SHA-256 variant
+             * (AKM 5, typically offered together with MFP) when the AP
+             * advertises it. Register it for both.
+             */
+            ieee80211_pmksa_add(ic, IEEE80211_AKM_8021X,
+                                ic->ic_bss->ni_macaddr, key->key, 0);
+            ieee80211_pmksa_add(ic, IEEE80211_AKM_SHA256_8021X,
+                                ic->ic_bss->ni_macaddr, key->key, 0);
             break;
-        case APPLE80211_CIPHER_PMKSA:
-            XYLog("Setting WPA PMKSA\n");
-            ieee80211_pmksa_add(fHalService->get80211Controller(), IEEE80211_AKM_8021X,
-                                fHalService->get80211Controller()->ic_bss->ni_macaddr, key->key, 0);
-            break;
+        }
     }
     //fInterface->postMessage(APPLE80211_M_CIPHER_KEY_CHANGED);
     return kIOReturnSuccess;

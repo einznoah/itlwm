@@ -1622,9 +1622,31 @@ ieee80211_choose_rsnparams(struct ieee80211com *ic)
     ni->ni_rsncipher = (enum ieee80211_cipher)ni->ni_rsnciphers;
     
     /* use MFP if we both support it */
+    ni->ni_flags &= ~(IEEE80211_NODE_MFP | IEEE80211_NODE_RXMGMTPROT |
+                      IEEE80211_NODE_TXMGMTPROT);
     if ((ic->ic_caps & IEEE80211_C_MFP) &&
-        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC))
-        ni->ni_flags |= IEEE80211_NODE_MFP;
+        (ni->ni_rsncaps & IEEE80211_RSNCAP_MFPC)) {
+#ifdef USE_APPLE_SUPPLICANT
+        if (ic->ic_rsn_ie_override[1] > 0) {
+            /*
+             * An external supplicant (Apple's) builds the RSN IE sent in
+             * the (Re)Association Request. MFP is only in use if that IE
+             * advertises MFPC as well, otherwise the AP and we would
+             * disagree on whether management frames are protected.
+             */
+            struct ieee80211_rsnparams rsn;
+
+            memset(&rsn, 0, sizeof(rsn));
+            if (ic->ic_rsn_ie_override[0] == IEEE80211_ELEMID_RSN &&
+                ieee80211_parse_rsn(ic, ic->ic_rsn_ie_override, &rsn) == 0 &&
+                (rsn.rsn_caps & IEEE80211_RSNCAP_MFPC))
+                ni->ni_flags |= IEEE80211_NODE_MFP;
+        } else
+#endif
+            ni->ni_flags |= IEEE80211_NODE_MFP;
+    }
+    XYLog("%s: AP rsncaps=0x%x MFP %s\n", __FUNCTION__, ni->ni_rsncaps,
+          (ni->ni_flags & IEEE80211_NODE_MFP) ? "negotiated" : "off");
 }
 
 int

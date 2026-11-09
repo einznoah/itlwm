@@ -656,8 +656,13 @@ ieee80211_inputm(struct _ifnet *ifp, mbuf_t m, struct ieee80211_node *ni,
                         /* unicast mgmt not encrypted */
                         goto out;
                     }
-                    /* do software decryption */
-                    m = ieee80211_decrypt(ic, m, ni);
+                    if (rxi->rxi_flags & IEEE80211_RXI_HWDEC) {
+                        /* decrypted by hardware, check PN and strip IV */
+                        m = ieee80211_input_hwdecrypt(ic, ni, m, rxi);
+                    } else {
+                        /* do software decryption */
+                        m = ieee80211_decrypt(ic, m, ni);
+                    }
                     if (m == NULL) {
                         /* XXX stats */
                         goto out;

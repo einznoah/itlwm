@@ -338,6 +338,8 @@ bool itlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOVHT;
     if (PE_parse_boot_argn("-noht40", &boot_value, sizeof(boot_value)))
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOHT40;
+    if (PE_parse_boot_argn("-itlwmnomfp", &boot_value, sizeof(boot_value)))
+        fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOMFP;
     
     if (!fHalService->attach(pciNub)) {
         XYLog("attach fail\n");

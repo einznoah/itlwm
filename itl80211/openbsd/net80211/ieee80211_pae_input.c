@@ -578,6 +578,9 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         
         /* map PTK to 802.11 key */
         k = &ni->ni_pairwise_key;
+        /* free a software context left over from a previous PTK */
+        if (k->k_flags & IEEE80211_KEY_SWCRYPTO)
+            ieee80211_delete_key(ic, ni, k);
         memset(k, 0, sizeof(*k));
         k->k_cipher = ni->ni_rsncipher;
         k->k_rsc[0] = prsc;
@@ -597,13 +600,17 @@ ieee80211_recv_4way_msg3(struct ieee80211com *ic,
         ni->ni_flags &= ~IEEE80211_NODE_RSN_NEW_PTK;
         ni->ni_flags &= ~IEEE80211_NODE_TXRXPROT;
         ni->ni_flags |= IEEE80211_NODE_RXPROT;
+        /* 11w: robust management frames are protected from now on */
+        if (ni->ni_flags & IEEE80211_NODE_MFP)
+            ni->ni_flags |= IEEE80211_NODE_RXMGMTPROT |
+                            IEEE80211_NODE_TXMGMTPROT;
     } else if (ni->ni_rsncipher != IEEE80211_CIPHER_USEGROUP)
         XYLog("%s: unexpected pairwise key update received from %s\n",
               ic->ic_if.if_xname, ether_sprintf(ni->ni_macaddr));
-    
+
     if (gtk != NULL) {
         u_int8_t kid;
-        
+
         /* check that key length matches that of group cipher */
         keylen = ieee80211_cipher_keylen(ni->ni_rsngroupcipher);
         if (gtk[1] != 6 + keylen) {

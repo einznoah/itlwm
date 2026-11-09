@@ -5053,9 +5053,14 @@ iwx_ccmp_decap(struct iwx_softc *sc, mbuf_t m, struct ieee80211_node *ni,
    if (!(ivp[3] & IEEE80211_WEP_EXTIV))
        return 1;
 
-   hasqos = ieee80211_has_qos(wh);
-   tid = hasqos ? ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
-   prsc = &k->k_rsc[tid];
+   if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT) {
+       /* 11w: management frames have their own replay counter */
+       prsc = &k->k_mgmt_rsc;
+   } else {
+       hasqos = ieee80211_has_qos(wh);
+       tid = hasqos ? ieee80211_get_qos(wh) & IEEE80211_QOS_TID : 0;
+       prsc = &k->k_rsc[tid];
+   }
 
    /* Extract the 48-bit PN from the CCMP header. */
    pn = (uint64_t)ivp[0]       |
@@ -5116,6 +5121,28 @@ iwx_rx_hwdecrypt(struct iwx_softc *sc, mbuf_t m, uint32_t rx_pkt_status,
           ni->ni_rsncipher == IEEE80211_CIPHER_CCMP) ||
          (IEEE80211_IS_MULTICAST(wh->i_addr1) &&
           ni->ni_rsngroupcipher == IEEE80211_CIPHER_CCMP))) {
+        if (type == IEEE80211_FC0_TYPE_MGT) {
+            uint32_t sec = rx_pkt_status & IWX_RX_MPDU_RES_STATUS_SEC_ENC_MSK;
+
+            /*
+             * 11w: if firmware did not decrypt this protected management
+             * frame leave it to software decryption in net80211.
+             */
+            if (sec != IWX_RX_MPDU_RES_STATUS_SEC_CCM_ENC &&
+                sec != IWX_RX_MPDU_RES_STATUS_SEC_CCM_CMAC_ENC)
+                goto out;
+            if ((rx_pkt_status &
+                 (IWX_RX_MPDU_RES_STATUS_DEC_DONE |
+                  IWX_RX_MPDU_RES_STATUS_MIC_OK)) !=
+                (IWX_RX_MPDU_RES_STATUS_DEC_DONE |
+                 IWX_RX_MPDU_RES_STATUS_MIC_OK)) {
+                ic->ic_stats.is_ccmp_dec_errs++;
+                ret = 1;
+                goto out;
+            }
+            rxi->rxi_flags |= IEEE80211_RXI_HWDEC;
+            goto out;
+        }
         if ((rx_pkt_status & IWX_RX_MPDU_RES_STATUS_SEC_ENC_MSK) !=
             IWX_RX_MPDU_RES_STATUS_SEC_CCM_ENC) {
             ic->ic_stats.is_ccmp_dec_errs++;
@@ -9530,12 +9557,12 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     ItlIwx *that = container_of(sc, ItlIwx, com);
     
     if (k->k_cipher != IEEE80211_CIPHER_CCMP) {
-        /* Fallback to software crypto for other ciphers. */
+        /* Fallback to software crypto for other ciphers (incl. BIP/IGTK). */
         return (ieee80211_set_key(ic, ni, k));
     }
-    
+
     memset(&cmd, 0, sizeof(cmd));
-    
+
     cmd.common.key_flags = htole16(IWX_STA_KEY_FLG_CCM |
                                    IWX_STA_KEY_FLG_WEP_KEY_MAP |
                                    ((k->k_id << IWX_STA_KEY_FLG_KEYID_POS) &
@@ -9543,8 +9570,21 @@ iwx_set_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     if (k->k_flags & IEEE80211_KEY_GROUP) {
         cmd.common.key_offset = 1;
         cmd.common.key_flags |= htole16(IWX_STA_KEY_MULTICAST);
-    } else
+    } else {
         cmd.common.key_offset = 0;
+        if (ni->ni_flags & IEEE80211_NODE_MFP) {
+            /*
+             * 11w: let firmware also protect unicast management frames
+             * with the pairwise key. Additionally load the key for
+             * software crypto so that protected management frames which
+             * firmware did not decrypt can still be handled by net80211.
+             */
+            cmd.common.key_flags |= htole16(IWX_STA_KEY_MFP);
+            if (!(k->k_flags & IEEE80211_KEY_SWCRYPTO) &&
+                ieee80211_set_key(ic, ni, k) != 0)
+                XYLog("%s: failed to load MFP software key\n", __FUNCTION__);
+        }
+    }
     
     memcpy(cmd.common.key, k->k_key, MIN(sizeof(cmd.common.key), k->k_len));
     cmd.common.sta_id = IWX_STATION_ID;
@@ -9581,8 +9621,14 @@ iwx_delete_key(struct ieee80211com *ic, struct ieee80211_node *ni,
     else
         cmd.common.key_offset = 0;
     cmd.common.sta_id = IWX_STATION_ID;
-    
+
     that->iwx_send_cmd_pdu(sc, IWX_ADD_STA_KEY, IWX_CMD_ASYNC, sizeof(cmd), &cmd);
+
+    /* 11w: release the software copy loaded by iwx_set_key(). */
+    if (k->k_flags & IEEE80211_KEY_SWCRYPTO) {
+        ieee80211_ccmp_delete_key(ic, k);
+        k->k_flags &= ~IEEE80211_KEY_SWCRYPTO;
+    }
 }
 
 int ItlIwx::
@@ -13062,7 +13108,15 @@ iwx_attach(struct iwx_softc *sc, struct pci_attach_args *pa)
     ic->ic_ampdu_params = (IEEE80211_AMPDU_PARAM_SS_4 | 0x3 /* 64k */);
     ic->ic_caps |= (IEEE80211_C_QOS | IEEE80211_C_TX_AMPDU_SETUP_IN_HW | IEEE80211_C_TX_AMPDU | IEEE80211_C_AMSDU_IN_AMPDU);
     ic->ic_caps |= IEEE80211_C_SUPPORTS_VHT_EXT_NSS_BW;
-    
+    /*
+     * 802.11w MFP: unicast management frames are protected by firmware
+     * using the pairwise key (IWX_STA_KEY_MFP), group management frames
+     * (BIP) are handled in software by net80211. Can be disabled with
+     * the -itlwmnomfp boot-arg.
+     */
+    if (!(ic->ic_userflags & IEEE80211_F_NOMFP))
+        ic->ic_caps |= IEEE80211_C_MFP;
+
     ic->ic_sup_rates[IEEE80211_MODE_11A] = ieee80211_std_rateset_11a;
     ic->ic_sup_rates[IEEE80211_MODE_11B] = ieee80211_std_rateset_11b;
     ic->ic_sup_rates[IEEE80211_MODE_11G] = ieee80211_std_rateset_11g;

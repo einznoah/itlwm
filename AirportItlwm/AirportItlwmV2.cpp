@@ -231,6 +231,8 @@ bool AirportItlwm::start(IOService *provider)
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOVHT;
     if (PE_parse_boot_argn("-noht40", &boot_value, sizeof(boot_value)))
         fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOHT40;
+    if (PE_parse_boot_argn("-itlwmnomfp", &boot_value, sizeof(boot_value)))
+        fHalService->get80211Controller()->ic_userflags |= IEEE80211_F_NOMFP;
     
     if (!fHalService->attach(pciNub)) {
         XYLog("attach fail\n");
@@ -712,11 +714,12 @@ getCARD_CAPABILITIES(OSObject *object,
     cd->capabilities[3] = 0x2B;
     cd->capabilities[5] = 0x40;
     cd->capabilities[6] = (
-//                           1 |    //MFP capable
                            0x8 |
                            0x4 |
                            0x80
                            );
+    if (caps & IEEE80211_C_MFP)
+        cd->capabilities[6] |= 1;    //MFP capable
     *(uint16_t *)&cd->capabilities[8] = 0x201;
 //
 //    cd->capabilities[2] |= 0x10;
