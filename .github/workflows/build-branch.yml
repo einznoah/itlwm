@@ -1,0 +1,49 @@
+name: Build branch
+
+# Builds itlwm and AirportItlwm for feature branches and uploads the kexts as
+# workflow artifacts (no release is published, unlike main.yml).
+
+on:
+  push:
+    branches-ignore: [master]
+  workflow_dispatch:
+
+env:
+  BUILD_OUTPUT: 'build/Build/Products/Debug'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 1
+
+    - name: Install MacKernelSDK
+      run: git clone --depth=1 https://github.com/acidanthera/MacKernelSDK.git
+
+    - name: Build itlwm
+      run: |
+        xcodebuild -scheme itlwm -configuration Debug -derivedDataPath build \
+          GIT_COMMIT=_${GITHUB_SHA::7}
+
+    - name: Build AirportItlwm
+      run: |
+        xcodebuild -scheme "AirportItlwm (all)" -configuration Debug -derivedDataPath build \
+          GIT_COMMIT=_${GITHUB_SHA::7}
+
+    - name: Pack kexts
+      run: |
+        cd "$BUILD_OUTPUT"
+        mkdir -p "$GITHUB_WORKSPACE/out"
+        zip -qr "$GITHUB_WORKSPACE/out/itlwm-DEBUG-${GITHUB_SHA::7}.zip" itlwm.kext
+        find . -mindepth 1 -maxdepth 1 -type d -not -name "*.kext" | cut -c 3- | while read -r tgt; do
+          zip -qr "$GITHUB_WORKSPACE/out/AirportItlwm-${tgt// /_}-DEBUG-${GITHUB_SHA::7}.zip" "$tgt"
+        done
+        ls -la "$GITHUB_WORKSPACE/out"
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: kexts-${{ github.sha }}
+        path: out/*.zip
